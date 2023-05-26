@@ -76,7 +76,8 @@ def evaluate():
 
 # Custom function to downsample audio to 8 kHz
 def resample_audio(example):
-    audio, sample_rate = sf.read(example["file"])
+    audio = example["audio"]
+    sample_rate = audio["sampling_rate"]
     downsampled_audio = sf.resample(audio, sample_rate, 8000)
     example["file"] = downsampled_audio
     example["sampling_rate"] = 8000
