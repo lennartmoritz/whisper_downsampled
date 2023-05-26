@@ -1,0 +1,17 @@
+from transformers import WhisperFeatureExtractor, WhisperProcessor, WhisperForConditionalGeneration
+
+# Custom WhisperFeatureExtractor with modified downsampling rate
+class CustomWhisperFeatureExtractor(WhisperFeatureExtractor):
+    def log_mel_spectrogram(self, *args, **kwargs):
+        # Modify the downsampling rate to 8 kHz (sample_rate=8000)
+        kwargs["sample_rate"] = 8000
+        return super().log_mel_spectrogram(*args, **kwargs)
+
+# Initialize the modified processor
+processor = WhisperProcessor(
+    feature_extractor=CustomWhisperFeatureExtractor.from_pretrained("openai/whisper-base"),
+    tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
+)
+
+model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
+
