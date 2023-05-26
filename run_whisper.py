@@ -5,8 +5,8 @@ from datasets import load_dataset
 from transformers.audio_utils import mel_filter_bank
 import torch
 from evaluate import load
-import soundfile as sf
-
+import sys
+from tqdm import tqdm
 
 def transcribe():
     # load model and processor
@@ -32,7 +32,12 @@ def transcribe():
 
 def evaluate():
     librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
-    librispeech_test_clean = librispeech_test_clean.map(resample_audio)
+    print(librispeech_test_clean["audio"][0])
+    print(len(librispeech_test_clean["audio"][0]["array"]))
+    print(type(librispeech_test_clean["audio"][0]["array"]))
+    # librispeech_test_clean = librispeech_test_clean.map(resample_audio)
+    librispeech_test_clean = resample_audio(librispeech_test_clean)
+    # sys.exit()
 
     # processor = WhisperProcessor.from_pretrained("openai/whisper-base")
     ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
@@ -75,12 +80,10 @@ def evaluate():
 
 
 # Custom function to downsample audio to 8 kHz
-def resample_audio(example):
-    audio = example["audio"]
-    sample_rate = audio["sampling_rate"]
-    downsampled_audio = sf.resample(audio, sample_rate, 8000)
-    example["file"] = downsampled_audio
-    example["sampling_rate"] = 8000
+def resample_audio(example, ds_factor = 2):
+    for index in tqdm(range(len(example["audio"]))):
+        example["audio"][index]["sampling_rate"] = example["audio"][index]["sampling_rate"] // ds_factor
+        example["audio"][index]["array"] = example["audio"][index]["array"][::2]
     return example
 
 if __name__ == "__main__":
