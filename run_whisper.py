@@ -5,6 +5,7 @@ from datasets import load_dataset
 from transformers.audio_utils import mel_filter_bank
 import torch
 from evaluate import load
+import soundfile as sf
 
 
 def transcribe():
@@ -31,10 +32,11 @@ def transcribe():
 
 def evaluate():
     librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
+    librispeech_test_clean = librispeech_test_clean.map(resample_audio)
 
     # processor = WhisperProcessor.from_pretrained("openai/whisper-base")
     ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
-    ds_feature_extractor = WhisperFeatureExtractor() # TODO: delete line
+    # ds_feature_extractor = WhisperFeatureExtractor() # TODO: delete line
     ds_factor = 2
     ds_feature_extractor.n_fft = ds_feature_extractor.n_fft // ds_factor
     ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
@@ -70,6 +72,15 @@ def evaluate():
 
     wer = load("wer")
     print(100 * wer.compute(references=result["reference"], predictions=result["prediction"]))
+
+
+# Custom function to downsample audio to 8 kHz
+def resample_audio(example):
+    audio, sample_rate = sf.read(example["file"])
+    downsampled_audio = sf.resample(audio, sample_rate, 8000)
+    example["file"] = downsampled_audio
+    example["sampling_rate"] = 8000
+    return example
 
 if __name__ == "__main__":
     evaluate()
