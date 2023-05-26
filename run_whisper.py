@@ -1,5 +1,8 @@
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
+from transformers.models.whisper import WhisperFeatureExtractor
+from transformers.models.whisper.tokenization_whisper import WhisperTokenizer
 from datasets import load_dataset
+from transformers.audio_utils import mel_filter_bank
 import torch
 from evaluate import load
 
@@ -29,7 +32,27 @@ def transcribe():
 def evaluate():
     librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
 
-    processor = WhisperProcessor.from_pretrained("openai/whisper-base")
+    # processor = WhisperProcessor.from_pretrained("openai/whisper-base")
+    ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
+    ds_feature_extractor = WhisperFeatureExtractor() # TODO: delete line
+    ds_factor = 2
+    ds_feature_extractor.n_fft = ds_feature_extractor.n_fft // ds_factor
+    ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
+    ds_feature_extractor.hop_length = ds_feature_extractor.hop_length // ds_factor
+    ds_feature_extractor.mel_filters = mel_filter_bank(
+            num_frequency_bins=1 + ds_feature_extractor.n_fft // ds_factor,
+            num_mel_filters=ds_feature_extractor.feature_size,
+            min_frequency=0.0,
+            max_frequency=8000.0 // ds_factor,
+            sampling_rate=ds_feature_extractor.sampling_rate,
+            norm="slaney",
+            mel_scale="slaney",
+        )
+
+    processor = WhisperProcessor(
+    feature_extractor=ds_feature_extractor,
+    tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
+)
     model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
 
     def map_to_pred(batch):
