@@ -1,7 +1,7 @@
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from transformers.models.whisper import WhisperFeatureExtractor
 from transformers.models.whisper.tokenization_whisper import WhisperTokenizer
-from datasets import load_dataset
+from datasets import load_dataset, Audio
 from transformers.audio_utils import mel_filter_bank
 import torch
 from evaluate import load
@@ -12,6 +12,7 @@ import numpy as np
 def evaluate():
     # librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
     librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    librispeech_test_clean = librispeech_test_clean.cast_column("audio", Audio(sampling_rate=8000))
     print(librispeech_test_clean["audio"][0])
     """ This prints:
     {'path': '/home/lennux/.cache/huggingface/datasets/downloads/extracted/80f773ffef1f9e7c284a356bb99db2f740655f871257acd846751dde70987539/dev_clean/1272/128104/1272-128104-0000.flac', 'array': array([0.00238037, 0.0020752 , 0.00198364, ..., 0.00042725, 0.00057983,
@@ -46,6 +47,7 @@ def evaluate():
     tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
 )
     model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
+    print(model)
 
     def map_to_pred(batch):
         print(len(batch))
@@ -53,10 +55,10 @@ def evaluate():
         audio = batch["audio"]
         # input_features = processor(audio["array"], sampling_rate=audio["sampling_rate"], return_tensors="pt").input_features
         my_temp_audio = batch["audio"]["array"].copy()
-        print(f"BEFORE: {len(my_temp_audio)}")
-        my_temp_audio = resample(my_temp_audio)
-        print(f"AFTER: {len(my_temp_audio)}")
-        print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
+        # print(f"BEFORE: {len(my_temp_audio)}")
+        # my_temp_audio = resample(my_temp_audio)
+        # print(f"AFTER: {len(my_temp_audio)}")
+        # print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^")
         input_features = processor(my_temp_audio, sampling_rate=8000, return_tensors="pt").input_features
         batch["reference"] = processor.tokenizer._normalize(batch['text'])
 
