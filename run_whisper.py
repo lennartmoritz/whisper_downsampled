@@ -16,7 +16,6 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, List, Union
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
-from sklearn.model_selection import train_test_split
 
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
@@ -45,14 +44,15 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         return batch
 
-def training(ds_factor=1, dataset_fraction=0.01):
+def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epochs=3):
+    model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
     print("Loading datasets...")
     librispeech_train_clean = load_dataset("librispeech_asr", "clean", split="train.100")
     print("Done [1/2]")
-    librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
+    librispeech_val_clean = load_dataset("librispeech_asr", "clean", split="validation")
     print("Done [2/2]")
     # librispeech_train_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
-    # librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    # librispeech_val_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
 
     # Selecting only 10% of librispeech_train_clean
     total_samples = len(librispeech_train_clean)
@@ -60,19 +60,19 @@ def training(ds_factor=1, dataset_fraction=0.01):
     random_indices = np.random.choice(total_samples, selected_samples, replace=False)
     librispeech_train_clean = librispeech_train_clean.select(random_indices)
     
-    # Selecting only 10% of librispeech_test_clean
-    total_test_samples = len(librispeech_test_clean)
-    selected_test_samples = int(dataset_fraction * total_test_samples)
-    random_test_indices = np.random.choice(total_test_samples, selected_test_samples, replace=False)
-    librispeech_test_clean = librispeech_test_clean.select(random_test_indices)
+    # Selecting only 10% of librispeech_val_clean
+    total_val_samples = len(librispeech_val_clean)
+    selected_test_samples = int(dataset_fraction * total_val_samples)
+    random_val_indices = np.random.choice(total_val_samples, selected_test_samples, replace=False)
+    librispeech_val_clean = librispeech_val_clean.select(random_val_indices)
 
     print("Downsampling datasets...")
-    librispeech_test_clean = librispeech_test_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
+    librispeech_val_clean = librispeech_val_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
     print("Done [1/2]")
     librispeech_train_clean = librispeech_train_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
     print("Done [2/2]")
-    print(librispeech_train_clean["audio"][0])
-    print(librispeech_test_clean["audio"][0])
+    # print(librispeech_train_clean["audio"][0])
+    # print(librispeech_val_clean["audio"][0])
 
 
     def prepare_dataset(batch):
@@ -86,8 +86,8 @@ def training(ds_factor=1, dataset_fraction=0.01):
         batch["labels"] = processor.tokenizer(batch["text"]).input_ids
         return batch
 
-    librispeech_train_clean = librispeech_train_clean.map(prepare_dataset, num_proc=4)
-    librispeech_test_clean = librispeech_test_clean.map(prepare_dataset, num_proc=4)
+    librispeech_train_clean = librispeech_train_clean.map(prepare_dataset, num_proc=1)
+    librispeech_val_clean = librispeech_val_clean.map(prepare_dataset, num_proc=1)
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
     metric = load("wer")
 
@@ -113,7 +113,7 @@ def training(ds_factor=1, dataset_fraction=0.01):
         learning_rate=1e-5,
         warmup_steps=500,
         # max_steps=4000,
-        num_train_epochs=3,
+        num_train_epochs=epochs,
         gradient_checkpointing=True,
         fp16=True,
         evaluation_strategy="steps",
@@ -121,7 +121,7 @@ def training(ds_factor=1, dataset_fraction=0.01):
         predict_with_generate=True,
         generation_max_length=225,
         save_steps=1000,
-        eval_steps=1000,
+        eval_steps=25,
         logging_steps=25,
         report_to=["tensorboard"],
         load_best_model_at_end=True,
@@ -135,20 +135,27 @@ def training(ds_factor=1, dataset_fraction=0.01):
         args=training_args,
         model=model,
         train_dataset=librispeech_train_clean,
-        eval_dataset=librispeech_test_clean,
+        eval_dataset=librispeech_val_clean,
         data_collator=data_collator,
         compute_metrics=compute_metrics,
         tokenizer=processor.feature_extractor,
     )
     processor.save_pretrained(training_args.output_dir)
     trainer.train()
+    trainer.save_model(store_path)
 
 
-def evaluate():
-    # librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
-    ds_factor = 1
+def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"):
     print(ds_factor)
-    librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    # librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
+
+    # Selecting only 10% of librispeech_test_clean
+    total_test_samples = len(librispeech_test_clean)
+    selected_test_samples = int(dataset_fraction * total_test_samples)
+    random_test_indices = np.random.choice(total_test_samples, selected_test_samples, replace=False)
+    librispeech_test_clean = librispeech_test_clean.select(random_test_indices)
+
     librispeech_test_clean = librispeech_test_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
     print(librispeech_test_clean["audio"][0])
     """ This prints:
@@ -159,33 +166,14 @@ def evaluate():
     print(len(librispeech_test_clean["audio"][0]["array"]))
     print(type(librispeech_test_clean["audio"][0]["array"][0]))
 
-    ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
-    # ds_factor = 2
-    ds_feature_extractor.n_fft = ds_feature_extractor.n_fft
-    ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
-    ds_feature_extractor.hop_length = ds_feature_extractor.hop_length // 1
-    ds_feature_extractor.mel_filters = mel_filter_bank(
-            num_frequency_bins=1 + ds_feature_extractor.n_fft // 2,
-            num_mel_filters=ds_feature_extractor.feature_size,
-            min_frequency=0.0,
-            max_frequency=8000.0 // ds_factor,
-            sampling_rate=ds_feature_extractor.sampling_rate,
-            norm="slaney",
-            mel_scale="slaney",
-        )
+    model = WhisperForConditionalGeneration.from_pretrained(load_path).to("cuda")
 
-    processor = WhisperProcessor(
-        feature_extractor=ds_feature_extractor,
-        tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
-    )
-    model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
-    print(model)
 
     def map_to_pred(batch):
         audio = batch["audio"]
         # input_features = processor(audio["array"], sampling_rate=audio["sampling_rate"], return_tensors="pt").input_features
         my_temp_audio = batch["audio"]["array"].copy()
-        input_features = processor(my_temp_audio, sampling_rate=16000/ds_factor, return_tensors="pt").input_features
+        input_features = processor(my_temp_audio, sampling_rate=16000//ds_factor, return_tensors="pt").input_features
         batch["reference"] = processor.tokenizer._normalize(batch['text'])
 
         with torch.no_grad():
@@ -197,56 +185,16 @@ def evaluate():
     result = librispeech_test_clean.map(map_to_pred)
 
     wer = load("wer")
+    print(">>>>>>>> EVALUATION <<<<<<<<")
     print(100 * wer.compute(references=result["reference"], predictions=result["prediction"]))
 
-def train_on_data():
-    # librispeech_train_clean = load_dataset("librispeech_asr", "clean", split="train.100")
-    librispeech_train_clean = load_dataset("librispeech_asr", "clean", split=Split.VALIDATION)
-    librispeech_train_clean = librispeech_train_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
-    ds_factor = 1
-    ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
-    ds_feature_extractor.n_fft = ds_feature_extractor.n_fft
-    ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
-    ds_feature_extractor.hop_length = ds_feature_extractor.hop_length // 1
-    ds_feature_extractor.mel_filters = mel_filter_bank(
-            num_frequency_bins=1 + ds_feature_extractor.n_fft // 2,
-            num_mel_filters=ds_feature_extractor.feature_size,
-            min_frequency=0.0,
-            max_frequency=8000.0 // ds_factor,
-            sampling_rate=ds_feature_extractor.sampling_rate,
-            norm="slaney",
-            mel_scale="slaney",
-        )
-
-    processor = WhisperProcessor(
-        feature_extractor=ds_feature_extractor,
-        tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
-    )
-    model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
-
-    def prepare_dataset(batch):
-        # load and resample audio data from 48 to 16kHz
-        audio = batch["audio"]
-
-        # compute log-Mel input features from input audio array
-        batch["input_features"] = feature_extractor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
-
-        # encode target text to label ids
-        batch["labels"] = tokenizer(batch["sentence"]).input_ids
-        return batch
-
-    librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
-    pass
 
 if __name__ == "__main__":
-
+    ds_factor = 1
     ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
-
-    ds_factor = 2
-    # ds_feature_extractor.feature_size = ds_feature_extractor.feature_size // ds_factor
-    ds_feature_extractor.n_fft = ds_feature_extractor.n_fft  # // ds_factor
+    # ds_feature_extractor.n_fft = ds_feature_extractor.n_fft
     ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
-    ds_feature_extractor.hop_length = ds_feature_extractor.hop_length  # // ds_factor
+    # ds_feature_extractor.hop_length = ds_feature_extractor.hop_length // 1
     ds_feature_extractor.mel_filters = mel_filter_bank(
         num_frequency_bins=1 + ds_feature_extractor.n_fft // 2,
         num_mel_filters=ds_feature_extractor.feature_size,
@@ -261,7 +209,8 @@ if __name__ == "__main__":
         feature_extractor=ds_feature_extractor,
         tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
     )
-    model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
+    # model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
 
-    training(ds_factor)
-    # evaluate()
+    evaluate(ds_factor, dataset_fraction=0.03)
+    training(ds_factor, dataset_fraction=0.03, store_path="models/run_01", epochs=3)
+    evaluate(ds_factor, dataset_fraction=0.03, load_path="models/run_01")
