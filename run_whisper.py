@@ -4,6 +4,7 @@ os.environ["NUMBA_DISABLE_INTEL_SVML"] = "1"
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from transformers.models.whisper import WhisperFeatureExtractor
 from transformers.models.whisper.tokenization_whisper import WhisperTokenizer
+from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 from datasets import load_dataset, Audio
 from transformers.audio_utils import mel_filter_bank
 import torch
@@ -90,8 +91,9 @@ def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epo
     librispeech_val_clean = librispeech_val_clean.map(prepare_dataset, num_proc=1)
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
     metric = load("wer")
+    normalizer = BasicTextNormalizer()  # 'official' text normalizer from OpenAI
 
-    def compute_metrics(pred):
+    def compute_metrics(pred, do_normalize_eval=True):
         pred_ids = pred.predictions
         label_ids = pred.label_ids
 
@@ -101,6 +103,13 @@ def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epo
         # we do not want to group tokens when computing the metrics
         pred_str = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
         label_str = processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
+
+        if do_normalize_eval:
+            pred_str = [normalizer(pred) for pred in pred_str]
+            label_str = [normalizer(label) for label in label_str]
+            # filtering step to only evaluate the samples that correspond to non-zero references:
+            pred_str = [pred_str[i] for i in range(len(pred_str)) if len(label_str[i]) > 0]
+            label_str = [label_str[i] for i in range(len(label_str)) if len(label_str[i]) > 0]
 
         wer = 100 * metric.compute(predictions=pred_str, references=label_str)
 
@@ -190,7 +199,7 @@ def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"
 
 
 if __name__ == "__main__":
-    ds_factor = 1
+    ds_factor = 2
     ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
     # ds_feature_extractor.n_fft = ds_feature_extractor.n_fft
     ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
@@ -211,6 +220,8 @@ if __name__ == "__main__":
     )
     # model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
 
-    evaluate(ds_factor, dataset_fraction=0.03)
-    training(ds_factor, dataset_fraction=0.03, store_path="models/run_01", epochs=3)
-    evaluate(ds_factor, dataset_fraction=0.03, load_path="models/run_01")
+    # evaluate(ds_factor, dataset_fraction=0.03)
+    training(ds_factor, dataset_fraction=0.03, store_path="models/run_02", epochs=3)
+    evaluate(ds_factor, dataset_fraction=0.03, load_path="models/run_02")
+    # https://github.com/krylm/whisper-event-tuning/blob/master/run_speech_recognition_seq2seq_streaming_mikr.py
+    # https://github.com/vasistalodagala/whisper-finetune/blob/master/train/fine-tune_on_hf_dataset.py
