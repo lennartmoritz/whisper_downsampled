@@ -1,15 +1,128 @@
+import os
+os.environ["NUMBA_DISABLE_INTEL_SVML"] = "1"
+
 from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from transformers.models.whisper import WhisperFeatureExtractor
 from transformers.models.whisper.tokenization_whisper import WhisperTokenizer
-from datasets import load_dataset, Audio, Split
+from datasets import load_dataset, Audio
 from transformers.audio_utils import mel_filter_bank
 import torch
 from evaluate import load
 import sys
 from tqdm import tqdm
+import torchaudio.transforms as T
+from time import time
 import numpy as np
+from dataclasses import dataclass
+from typing import Any, Dict, List, Union
+from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
 
-from transformers import Seq2SeqTrainer
+@dataclass
+class DataCollatorSpeechSeq2SeqWithPadding:
+    processor: Any
+
+    def __call__(self, features: List[Dict[str, Union[List[int], torch.Tensor]]]) -> Dict[str, torch.Tensor]:
+        # split inputs and labels since they have to be of different lengths and need different padding methods
+        # first treat the audio inputs by simply returning torch tensors
+        input_features = [{"input_features": feature["input_features"]} for feature in features]
+        batch = self.processor.feature_extractor.pad(input_features, return_tensors="pt")
+
+        # get the tokenized label sequences
+        label_features = [{"input_ids": feature["labels"]} for feature in features]
+        # pad the labels to max length
+        labels_batch = self.processor.tokenizer.pad(label_features, return_tensors="pt")
+
+        # replace padding with -100 to ignore loss correctly
+        labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
+
+        # if bos token is appended in previous tokenization step,
+        # cut bos token here as it's append later anyways
+        if (labels[:, 0] == self.processor.tokenizer.bos_token_id).all().cpu().item():
+            labels = labels[:, 1:]
+
+        batch["labels"] = labels
+
+        return batch
+
+def training():
+    ds_factor=1
+    #librispeech_train_clean = load_dataset("librispeech_asr", "clean", split="train.100")
+    #librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
+    librispeech_train_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    librispeech_test_clean = librispeech_test_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
+    librispeech_train_clean = librispeech_train_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
+    print(librispeech_train_clean["audio"][0])
+    print(librispeech_test_clean["audio"][0])
+
+
+    def prepare_dataset(batch):
+        # load and resample audio data from 48 to 16kHz
+        audio = batch["audio"]
+
+        # compute log-Mel input features from input audio array
+        batch["input_features"] = \
+        processor.feature_extractor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
+
+        # encode target text to label ids
+        batch["labels"] = processor.tokenizer(batch["sentence"]).input_ids
+        return batch
+
+    librispeech_train_clean.map(prepare_dataset(), num_proc=4)
+    librispeech_test_clean.map(prepare_dataset(), num_proc=4)
+    data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
+    metric = load("wer")
+
+    def compute_metrics(pred):
+        pred_ids = pred.predictions
+        label_ids = pred.label_ids
+
+        # replace -100 with the pad_token_id
+        label_ids[label_ids == -100] = processor.tokenizer.pad_token_id
+
+        # we do not want to group tokens when computing the metrics
+        pred_str = processor.tokenizer.batch_decode(pred_ids, skip_special_tokens=True)
+        label_str = processor.tokenizer.batch_decode(label_ids, skip_special_tokens=True)
+
+        wer = 100 * metric.compute(predictions=pred_str, references=label_str)
+
+        return {"wer": wer}
+
+    training_args = Seq2SeqTrainingArguments(
+        output_dir="./whisper-base-finetuned",  # change to a repo name of your choice
+        per_device_train_batch_size=16,
+        gradient_accumulation_steps=1,  # increase by 2x for every 2x decrease in batch size
+        learning_rate=1e-5,
+        warmup_steps=500,
+        max_steps=4000,
+        gradient_checkpointing=True,
+        fp16=True,
+        evaluation_strategy="steps",
+        per_device_eval_batch_size=8,
+        predict_with_generate=True,
+        generation_max_length=225,
+        save_steps=1000,
+        eval_steps=1000,
+        logging_steps=25,
+        report_to=["tensorboard"],
+        load_best_model_at_end=True,
+        metric_for_best_model="wer",
+        greater_is_better=False,
+        push_to_hub=False,
+    )
+
+    trainer = Seq2SeqTrainer(
+        args=training_args,
+        model=model,
+        train_dataset=librispeech_train_clean,
+        eval_dataset=librispeech_test_clean,
+        data_collator=data_collator,
+        compute_metrics=compute_metrics,
+        tokenizer=processor.feature_extractor,
+    )
+    processor.save_pretrained(training_args.output_dir)
+    trainer.train()
+
 
 def evaluate():
     # librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
@@ -48,8 +161,6 @@ def evaluate():
     print(model)
 
     def map_to_pred(batch):
-        print(len(batch))
-        print(len(batch["audio"]))
         audio = batch["audio"]
         # input_features = processor(audio["array"], sampling_rate=audio["sampling_rate"], return_tensors="pt").input_features
         my_temp_audio = batch["audio"]["array"].copy()
@@ -92,15 +203,15 @@ def train_on_data():
         tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
     )
     model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
-    
+
     def prepare_dataset(batch):
         # load and resample audio data from 48 to 16kHz
         audio = batch["audio"]
 
-        # compute log-Mel input features from input audio array 
+        # compute log-Mel input features from input audio array
         batch["input_features"] = feature_extractor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
 
-        # encode target text to label ids 
+        # encode target text to label ids
         batch["labels"] = tokenizer(batch["sentence"]).input_ids
         return batch
 
@@ -108,4 +219,29 @@ def train_on_data():
     pass
 
 if __name__ == "__main__":
+
+    ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
+
+    ds_factor = 2
+    # ds_feature_extractor.feature_size = ds_feature_extractor.feature_size // ds_factor
+    ds_feature_extractor.n_fft = ds_feature_extractor.n_fft  # // ds_factor
+    ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
+    ds_feature_extractor.hop_length = ds_feature_extractor.hop_length  # // ds_factor
+    ds_feature_extractor.mel_filters = mel_filter_bank(
+        num_frequency_bins=1 + ds_feature_extractor.n_fft // 2,
+        num_mel_filters=ds_feature_extractor.feature_size,
+        min_frequency=0.0,
+        max_frequency=8000.0 // ds_factor,
+        sampling_rate=ds_feature_extractor.sampling_rate,
+        norm="slaney",
+        mel_scale="slaney",
+    )
+
+    processor = WhisperProcessor(
+        feature_extractor=ds_feature_extractor,
+        tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
+    )
+    model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
+
+    #training()
     evaluate()
