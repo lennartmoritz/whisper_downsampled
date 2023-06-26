@@ -16,6 +16,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, List, Union
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
+from sklearn.model_selection import train_test_split
 
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
@@ -44,13 +45,32 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         return batch
 
-def training(ds_factor=1):
+def training(ds_factor=1, dataset_fraction=0.01):
+    print("Loading datasets...")
     librispeech_train_clean = load_dataset("librispeech_asr", "clean", split="train.100")
+    print("Done [1/2]")
     librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
+    print("Done [2/2]")
     # librispeech_train_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
     # librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+
+    # Selecting only 10% of librispeech_train_clean
+    total_samples = len(librispeech_train_clean)
+    selected_samples = int(dataset_fraction * total_samples)
+    random_indices = np.random.choice(total_samples, selected_samples, replace=False)
+    librispeech_train_clean = librispeech_train_clean.select(random_indices)
+    
+    # Selecting only 10% of librispeech_test_clean
+    total_test_samples = len(librispeech_test_clean)
+    selected_test_samples = int(dataset_fraction * total_test_samples)
+    random_test_indices = np.random.choice(total_test_samples, selected_test_samples, replace=False)
+    librispeech_test_clean = librispeech_test_clean.select(random_test_indices)
+
+    print("Downsampling datasets...")
     librispeech_test_clean = librispeech_test_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
+    print("Done [1/2]")
     librispeech_train_clean = librispeech_train_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
+    print("Done [2/2]")
     print(librispeech_train_clean["audio"][0])
     print(librispeech_test_clean["audio"][0])
 
