@@ -44,12 +44,11 @@ class DataCollatorSpeechSeq2SeqWithPadding:
 
         return batch
 
-def training():
-    ds_factor=1
-    #librispeech_train_clean = load_dataset("librispeech_asr", "clean", split="train.100")
-    #librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
-    librispeech_train_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
-    librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+def training(ds_factor=1):
+    librispeech_train_clean = load_dataset("librispeech_asr", "clean", split="train.100")
+    librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
+    # librispeech_train_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
+    # librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
     librispeech_test_clean = librispeech_test_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
     librispeech_train_clean = librispeech_train_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
     print(librispeech_train_clean["audio"][0])
@@ -61,15 +60,14 @@ def training():
         audio = batch["audio"]
 
         # compute log-Mel input features from input audio array
-        batch["input_features"] = \
-        processor.feature_extractor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
+        batch["input_features"] = processor.feature_extractor(audio["array"], sampling_rate=audio["sampling_rate"]).input_features[0]
 
         # encode target text to label ids
-        batch["labels"] = processor.tokenizer(batch["sentence"]).input_ids
+        batch["labels"] = processor.tokenizer(batch["text"]).input_ids
         return batch
 
-    librispeech_train_clean.map(prepare_dataset(), num_proc=4)
-    librispeech_test_clean.map(prepare_dataset(), num_proc=4)
+    librispeech_train_clean = librispeech_train_clean.map(prepare_dataset, num_proc=4)
+    librispeech_test_clean = librispeech_test_clean.map(prepare_dataset, num_proc=4)
     data_collator = DataCollatorSpeechSeq2SeqWithPadding(processor=processor)
     metric = load("wer")
 
@@ -94,7 +92,8 @@ def training():
         gradient_accumulation_steps=1,  # increase by 2x for every 2x decrease in batch size
         learning_rate=1e-5,
         warmup_steps=500,
-        max_steps=4000,
+        # max_steps=4000,
+        num_train_epochs=3,
         gradient_checkpointing=True,
         fp16=True,
         evaluation_strategy="steps",
@@ -109,6 +108,7 @@ def training():
         metric_for_best_model="wer",
         greater_is_better=False,
         push_to_hub=False,
+        remove_unused_columns=True,
     )
 
     trainer = Seq2SeqTrainer(
@@ -127,6 +127,7 @@ def training():
 def evaluate():
     # librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
     ds_factor = 1
+    print(ds_factor)
     librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
     librispeech_test_clean = librispeech_test_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
     print(librispeech_test_clean["audio"][0])
@@ -164,7 +165,6 @@ def evaluate():
         audio = batch["audio"]
         # input_features = processor(audio["array"], sampling_rate=audio["sampling_rate"], return_tensors="pt").input_features
         my_temp_audio = batch["audio"]["array"].copy()
-        print(ds_factor)
         input_features = processor(my_temp_audio, sampling_rate=16000/ds_factor, return_tensors="pt").input_features
         batch["reference"] = processor.tokenizer._normalize(batch['text'])
 
@@ -243,5 +243,5 @@ if __name__ == "__main__":
     )
     model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
 
-    #training()
-    evaluate()
+    training(ds_factor)
+    # evaluate()
