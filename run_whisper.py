@@ -195,18 +195,20 @@ def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"
         batch["prediction"] = processor.tokenizer._normalize(transcription)
         return batch
 
-    result = librispeech_test_clean.map(map_to_pred)
-    # result = {}
-    # for batch in librispeech_test_clean:
-    #     result = map_to_pred(batch=batch)
-    #     print(result)
-    # print(len(result))
-    # print(type(result))
-    # print(result["reference"])
+    results = []
+    for batch in tqdm(librispeech_test_clean, desc="Evaluating"):
+        result = map_to_pred(batch=batch)
+        result = {
+            "reference": result["reference"],
+            "prediction": result["prediction"]
+        }
+        results.append(result)
 
     wer = load("wer")
+    references = [result["reference"] for result in results]
+    predictions = [result["prediction"] for result in results]
     print(">>>>>>>> EVALUATION <<<<<<<<")
-    print(100 * wer.compute(references=result["reference"], predictions=result["prediction"]))
+    print(100 * wer.compute(references=references, predictions=predictions))
 
 
 if __name__ == "__main__":
