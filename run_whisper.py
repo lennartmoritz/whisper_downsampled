@@ -5,7 +5,7 @@ from transformers import WhisperProcessor, WhisperForConditionalGeneration
 from transformers.models.whisper import WhisperFeatureExtractor
 from transformers.models.whisper.tokenization_whisper import WhisperTokenizer
 from transformers.models.whisper.english_normalizer import BasicTextNormalizer
-from datasets import load_dataset, Audio
+from datasets import load_dataset, Audio, Dataset
 from transformers.audio_utils import mel_filter_bank
 import torch
 from evaluate import load
@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Union
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
 import datetime
+import matplotlib.pyplot as plt
 
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
@@ -124,7 +125,7 @@ def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epo
         return {"wer": wer}
 
 
-    steps_per_epoch = int(dataset_fraction * total_samples) / 16
+    steps_per_epoch = int(dataset_fraction * total_samples / 16)
     training_args = Seq2SeqTrainingArguments(
         output_dir="./whisper-base-finetuned",  # change to a repo name of your choice
         per_device_train_batch_size=16,
@@ -140,7 +141,7 @@ def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epo
         predict_with_generate=True,
         generation_max_length=225,
         save_steps=1000,
-        eval_steps=25,
+        eval_steps=50,
         logging_steps=25,
         report_to=["tensorboard"],
         load_best_model_at_end=True,
@@ -181,6 +182,26 @@ def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"
 
     # """
     print(len(librispeech_test_clean["audio"][0]["array"]))
+    USE_COMPRESSED_SEQUENCES = True
+    if USE_COMPRESSED_SEQUENCES:
+        new_examples = []
+        for i in range(0, len(librispeech_test_clean), ds_factor):
+            samples = []
+
+            for x in range(0, ds_factor):
+                if i+x < len(librispeech_test_clean):
+                    samples.append(librispeech_test_clean[i+x])
+
+            sample1 = samples[0]
+            for x in range(1, ds_factor):
+                if x >= len(samples):
+                    break
+                sample = samples[x]
+                sample1["text"] = sample1["text"] + " " + sample["text"]
+                sample1["audio"]["array"] = np.concatenate([sample1["audio"]["array"], sample["audio"]["array"]])
+            new_examples.append(sample1)
+
+        librispeech_test_clean = Dataset.from_list(new_examples)
     sum = 0
     for item in librispeech_test_clean["audio"]:
         sum += len(item["array"])
@@ -227,13 +248,41 @@ def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"
         file.write(f"{current_date}: {output_str}\n")
 
 
+
+def plot_audio_length_distribution(dataset):
+    # Get the array lengths in seconds for all samples
+    sampling_rate = dataset['audio'][0]['sampling_rate']
+    array_lengths = [len(sample['array']) / sampling_rate for sample in dataset['audio']]
+
+    # Calculate the number of samples longer than 30 seconds
+    num_longer_than_30s = sum(length > 30 for length in array_lengths)
+    num_total_samples = len(array_lengths)
+
+    # Print the results
+    print(f"Number of samples longer than 30 seconds: {num_longer_than_30s} (absolute)")
+    print(f"Percentage of samples longer than 30 seconds: {num_longer_than_30s / num_total_samples * 100:.2f}% (relative)")
+    print(f"Total number of samples: {num_total_samples}")
+
+    # Create a histogram
+    plt.hist(array_lengths, bins=50, edgecolor='black')
+
+    # Set labels and title
+    plt.xlabel('Audio Length (seconds)')
+    plt.ylabel('Frequency')
+    plt.title('Distribution of Audio Lengths')
+
+    # Display the histogram
+    plt.show()
+
+
+
 if __name__ == "__main__":
-    ds_factor = 4
+    ds_factor = 3
     dataset_fraction = 0.10
-    BEFORE_FINETUNUNG = False
-    TRAINING = True
-    FOLDER = "models/run_01"
-    EPOCHS = 3
+    BEFORE_FINETUNUNG = True
+    TRAINING = False
+    FOLDER = "models/run_02"
+    EPOCHS = 1
     ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
     # ds_feature_extractor.n_fft = ds_feature_extractor.n_fft
     ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
@@ -253,6 +302,13 @@ if __name__ == "__main__":
         tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
     )
     # model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
+    if False:
+        librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="train.100")
+        # total_samples = len(librispeech_test_clean)
+        # librispeech_test_clean = librispeech_test_clean.select(range(int(dataset_fraction * total_samples)))
+        plot_audio_length_distribution(librispeech_test_clean)
+        sys.exit()
+
 
     if BEFORE_FINETUNUNG:
         evaluate(ds_factor, dataset_fraction)
