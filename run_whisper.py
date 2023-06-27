@@ -71,7 +71,7 @@ def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epo
     librispeech_val_clean = load_dataset("librispeech_asr", "clean", split="validation")
     total_val_samples = len(librispeech_val_clean)
     librispeech_val_clean = load_dataset("librispeech_asr", "clean", split="validation", streaming=True)
-    librispeech_val_clean = librispeech_val_clean.take(int(dataset_fraction * total_val_samples))
+    librispeech_val_clean = librispeech_val_clean.take(int(0.5 * dataset_fraction * total_val_samples))
     print("Done [2/2]")
     # librispeech_train_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
     # librispeech_val_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
@@ -130,8 +130,8 @@ def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epo
         output_dir="./whisper-base-finetuned",  # change to a repo name of your choice
         per_device_train_batch_size=16,
         gradient_accumulation_steps=1,  # increase by 2x for every 2x decrease in batch size
-        learning_rate=1e-5,
-        warmup_steps=500,
+        learning_rate=1e-6,
+        warmup_steps=75,
         max_steps=epochs*steps_per_epoch,
         # num_train_epochs=epochs,
         gradient_checkpointing=True,
@@ -140,11 +140,11 @@ def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epo
         per_device_eval_batch_size=8,
         predict_with_generate=True,
         generation_max_length=225,
-        save_steps=1000,
-        eval_steps=50,
+        save_steps=750,
+        eval_steps=75,
         logging_steps=25,
         report_to=["tensorboard"],
-        load_best_model_at_end=True,
+        load_best_model_at_end=False,
         metric_for_best_model="wer",
         greater_is_better=False,
         push_to_hub=False,
@@ -166,12 +166,12 @@ def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epo
 
 
 def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"):
+    dataset_fraction = 0.3
     print(ds_factor)
     # librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
     librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
     total_samples = len(librispeech_test_clean)
     librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test", streaming=False)
-    # librispeech_test_clean = librispeech_test_clean.take(int(dataset_fraction * total_samples))
     librispeech_test_clean = librispeech_test_clean.select(range(int(dataset_fraction * total_samples)))
 
     librispeech_test_clean = librispeech_test_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
@@ -242,17 +242,47 @@ def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"
     print(output_str)
     
     # Append the output along with the current date to the log file
-    log_file = "training_log.txt"
+    log_file = "eval_log.txt"
     with open(log_file, "a") as file:
         current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         file.write(f"{current_date}: {output_str}\n")
 
 
 
-def plot_audio_length_distribution(dataset):
-    # Get the array lengths in seconds for all samples
+def plot_audio_length_distribution(ds_path="librispeech_asr", ds_name="clean", ds_split="test", ds_fraction = 1.0):
+    dataset = load_dataset(ds_path, ds_name, split=ds_split)
+    total_samples = len(dataset)
     sampling_rate = dataset['audio'][0]['sampling_rate']
-    array_lengths = [len(sample['array']) / sampling_rate for sample in dataset['audio']]
+    del(dataset)
+
+    USE_COMPRESSED_SEQUENCES = True
+    if USE_COMPRESSED_SEQUENCES:
+        new_examples = []
+        sequences = 1
+        for n in range(sequences):
+            dataset = load_dataset(ds_path, ds_name, split=ds_split).select(range(int(n * ds_fraction * total_samples / sequences), int((n+1) * ds_fraction * total_samples / sequences)))
+            for i in range(0, len(dataset), ds_factor):
+                samples = []
+
+                for x in range(0, ds_factor):
+                    if i+x < len(dataset):
+                        samples.append(dataset[i+x])
+
+                sample1 = samples[0]
+                for x in range(1, ds_factor):
+                    if x >= len(samples):
+                        break
+                    sample = samples[x]
+                    sample1["text"] = sample1["text"] + " " + sample["text"]
+                    sample1["audio"]["array"] = np.concatenate([sample1["audio"]["array"], sample["audio"]["array"]])
+                new_examples.append(sample1)
+
+        # dataset = Dataset.from_list(new_examples)
+        dataset = new_examples
+        
+    # Get the array lengths in seconds for all samples
+    # sampling_rate = dataset['audio'][0]['sampling_rate']
+    array_lengths = [len(sample['audio']['array']) / sampling_rate for sample in dataset]
 
     # Calculate the number of samples longer than 30 seconds
     num_longer_than_30s = sum(length > 30 for length in array_lengths)
@@ -277,12 +307,12 @@ def plot_audio_length_distribution(dataset):
 
 
 if __name__ == "__main__":
-    ds_factor = 3
+    ds_factor = 4
     dataset_fraction = 0.10
-    BEFORE_FINETUNUNG = True
-    TRAINING = False
-    FOLDER = "models/run_02"
-    EPOCHS = 1
+    BEFORE_FINETUNUNG = False
+    TRAINING = True
+    FOLDER = "models/ds_4_ep_3_lr_1e-6"
+    EPOCHS = 3
     ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
     # ds_feature_extractor.n_fft = ds_feature_extractor.n_fft
     ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
@@ -302,11 +332,12 @@ if __name__ == "__main__":
         tokenizer=WhisperTokenizer.from_pretrained("openai/whisper-base"),
     )
     # model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
-    if False:
-        librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="train.100")
+    if True:
+        # librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
         # total_samples = len(librispeech_test_clean)
         # librispeech_test_clean = librispeech_test_clean.select(range(int(dataset_fraction * total_samples)))
-        plot_audio_length_distribution(librispeech_test_clean)
+        # plot_audio_length_distribution(librispeech_test_clean)
+        plot_audio_length_distribution("librispeech_asr", "clean", ds_split="test", ds_fraction=0.3)
         sys.exit()
 
 
