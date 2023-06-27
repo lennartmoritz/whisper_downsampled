@@ -17,6 +17,7 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Any, Dict, List, Union
 from transformers import Seq2SeqTrainer, Seq2SeqTrainingArguments
+import datetime
 
 @dataclass
 class DataCollatorSpeechSeq2SeqWithPadding:
@@ -122,13 +123,15 @@ def training(ds_factor=1, dataset_fraction=0.01, store_path="models/run_01", epo
 
         return {"wer": wer}
 
+
+    steps_per_epoch = int(dataset_fraction * total_samples) / 16
     training_args = Seq2SeqTrainingArguments(
         output_dir="./whisper-base-finetuned",  # change to a repo name of your choice
         per_device_train_batch_size=16,
         gradient_accumulation_steps=1,  # increase by 2x for every 2x decrease in batch size
         learning_rate=1e-5,
         warmup_steps=500,
-        max_steps=40,
+        max_steps=epochs*steps_per_epoch,
         # num_train_epochs=epochs,
         gradient_checkpointing=True,
         fp16=True,
@@ -166,8 +169,9 @@ def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"
     # librispeech_test_clean = load_dataset("hf-internal-testing/librispeech_asr_dummy", "clean", split="validation")
     librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test")
     total_samples = len(librispeech_test_clean)
-    librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test", streaming=True)
-    librispeech_test_clean = librispeech_test_clean.take(int(dataset_fraction * total_samples))
+    librispeech_test_clean = load_dataset("librispeech_asr", "clean", split="test", streaming=False)
+    # librispeech_test_clean = librispeech_test_clean.take(int(dataset_fraction * total_samples))
+    librispeech_test_clean = librispeech_test_clean.select(range(int(dataset_fraction * total_samples)))
 
     librispeech_test_clean = librispeech_test_clean.cast_column("audio", Audio(sampling_rate=16000//ds_factor))
     # print(librispeech_test_clean["audio"][0])
@@ -176,17 +180,19 @@ def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"
     #    0.0010376 ]), 'sampling_rate': 16000}
 
     # """
-    # print(len(librispeech_test_clean["audio"][0]["array"]))
+    print(len(librispeech_test_clean["audio"][0]["array"]))
+    sum = 0
+    for item in librispeech_test_clean["audio"]:
+        sum += len(item["array"])
+    print(f"Sum was {sum}")
     # print(type(librispeech_test_clean["audio"][0]["array"][0]))
 
     model = WhisperForConditionalGeneration.from_pretrained(load_path).to("cuda")
 
 
     def map_to_pred(batch):
-        audio = batch["audio"]
         # input_features = processor(audio["array"], sampling_rate=audio["sampling_rate"], return_tensors="pt").input_features
-        my_temp_audio = batch["audio"]["array"].copy()
-        input_features = processor(my_temp_audio, sampling_rate=16000//ds_factor, return_tensors="pt").input_features
+        input_features = processor(batch["audio"]["array"], sampling_rate=16000//ds_factor, return_tensors="pt").input_features
         batch["reference"] = processor.tokenizer._normalize(batch['text'])
 
         with torch.no_grad():
@@ -196,6 +202,7 @@ def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"
         return batch
 
     results = []
+    start = datetime.datetime.now()
     for batch in tqdm(librispeech_test_clean, desc="Evaluating"):
         result = map_to_pred(batch=batch)
         result = {
@@ -203,16 +210,30 @@ def evaluate(ds_factor=1, dataset_fraction=0.01, load_path="openai/whisper-base"
             "prediction": result["prediction"]
         }
         results.append(result)
+    duration = (datetime.datetime.now() - start).total_seconds()
 
     wer = load("wer")
     references = [result["reference"] for result in results]
     predictions = [result["prediction"] for result in results]
     print(">>>>>>>> EVALUATION <<<<<<<<")
-    print(100 * wer.compute(references=references, predictions=predictions))
+    wer_value = 100 * wer.compute(references=references, predictions=predictions)
+    output_str = f"WER: {round(wer_value, 4)} \tTime (s): {round(duration, 4)}, \tDS-Factor: {ds_factor}"
+    print(output_str)
+    
+    # Append the output along with the current date to the log file
+    log_file = "training_log.txt"
+    with open(log_file, "a") as file:
+        current_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        file.write(f"{current_date}: {output_str}\n")
 
 
 if __name__ == "__main__":
-    ds_factor = 2
+    ds_factor = 4
+    dataset_fraction = 0.10
+    BEFORE_FINETUNUNG = False
+    TRAINING = True
+    FOLDER = "models/run_01"
+    EPOCHS = 3
     ds_feature_extractor = WhisperFeatureExtractor.from_pretrained("openai/whisper-base")
     # ds_feature_extractor.n_fft = ds_feature_extractor.n_fft
     ds_feature_extractor.sampling_rate = ds_feature_extractor.sampling_rate // ds_factor
@@ -233,8 +254,12 @@ if __name__ == "__main__":
     )
     # model = WhisperForConditionalGeneration.from_pretrained("openai/whisper-base").to("cuda")
 
-    # evaluate(ds_factor, dataset_fraction=0.03)
-    # training(ds_factor, dataset_fraction=0.03, store_path="models/run_04", epochs=3)
-    evaluate(ds_factor, dataset_fraction=0.03, load_path="models/run_04")
+    if BEFORE_FINETUNUNG:
+        evaluate(ds_factor, dataset_fraction)
+    elif TRAINING:
+        training(ds_factor, dataset_fraction, store_path=FOLDER, epochs=EPOCHS)
+    if not BEFORE_FINETUNUNG:
+        evaluate(ds_factor, dataset_fraction, load_path=FOLDER)
+
     # https://github.com/krylm/whisper-event-tuning/blob/master/run_speech_recognition_seq2seq_streaming_mikr.py
     # https://github.com/vasistalodagala/whisper-finetune/blob/master/train/fine-tune_on_hf_dataset.py
